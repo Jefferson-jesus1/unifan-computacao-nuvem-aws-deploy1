@@ -1,78 +1,54 @@
-name: Deploy Backend API
+version: '3.8'
 
-on:
-  push:
-    branches: [ "main" ]
+services:
+  # ==========================================
+  # 1. Serviço do Banco de Dados (MySQL)
+  # ==========================================
+  db:
+    image: mysql:8.0
+    container_name: mysql-local
+    restart: always
+    environment:
+      # Configuração inicial do MySQL (credenciais)
+      MYSQL_DATABASE: aula_pratica_db
+      MYSQL_USER: admin
+      MYSQL_PASSWORD: sua_senha
+      MYSQL_ROOT_PASSWORD: root_password # Senha do administrador (root)
+    ports:
+      # Expõe a porta 3306 do container para o seu computador local
+      - "3306:3306"
+    volumes:
+      # 'db_data' salva os dados do banco para não serem perdidos ao reiniciar
+      - db_data:/var/lib/mysql
+      # Mapeia o seu ficheiro SQL para ser executado automaticamente ao inicializar o banco!
+      - ./src/db/schema.sql:/docker-entrypoint-initdb.d/schema.sql
 
-jobs:
-  build-and-deploy:
-    runs-on: ubuntu-latest
+  # ==========================================
+  # 2. Serviço da API Backend (Node.js)
+  # ==========================================
+  api:
+    build: . # Usa o ficheiro Dockerfile da raiz do projeto para criar a imagem
+    container_name: api-backend-local
+    restart: always
+    ports:
+      # Mapeia a porta 3000 do container para a porta 3000 da sua máquina
+      - "3000:3000"
+    depends_on:
+      - db # Garante que o banco de dados inicie antes da API
+    environment:
+      # Configurações do servidor e banco de dados
+      - PORT=3000
+      - DB_HOST=db # Aponta para o nome do serviço do banco definido acima
+      - DB_USER=admin
+      - DB_PASSWORD=sua_senha
+      - DB_NAME=aula_pratica_db
+      - DB_PORT=3306
+      # Credenciais da AWS (o Docker Compose vai ler automaticamente do seu ficheiro .env local)
+      - AWS_REGION=${AWS_REGION}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_S3_BUCKET_NAME=${AWS_S3_BUCKET_NAME}
 
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-1
-
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Build, tag, and push image to Amazon ECR (SemVer)
-        env:
-          ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
-          ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
-          IMAGE_TAG: ${{ github.actor }}-v1.0.${{ github.run_number }} # Versionamento semantico simples
-        run: |
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
-          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:latest
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
-
-      - name: Deploy to EC2 via SSH
-        uses: appleboy/ssh-action@master
-        env:
-          ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
-          ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
-          DB_HOST: ${{ secrets.DB_HOST }}
-          DB_USER: ${{ secrets.DB_USER }}
-          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
-          DB_NAME: ${{ secrets.DB_NAME }}
-          AWS_REGION: ${{ secrets.AWS_REGION }}
-          AWS_S3_BUCKET_NAME: ${{ secrets.AWS_S3_BUCKET_NAME }}
-          CONTAINER_NAME: api-backend-${{ github.actor }}
-          IMAGE_TAG: ${{ github.actor }}-v1.0.${{ github.run_number }}
-          HOST_PORT: ${{ secrets.HOST_PORT }}
-        with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ubuntu
-          key: ${{ secrets.EC2_SSH_KEY }}
-          envs: ECR_REGISTRY,ECR_REPOSITORY,DB_HOST,DB_USER,DB_PASSWORD,DB_NAME,AWS_REGION,AWS_S3_BUCKET_NAME,CONTAINER_NAME,IMAGE_TAG,HOST_PORT
-          script: |
-            # Login no ECR a partir da EC2 (usa a IAM Role anexada a instancia)
-            aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY
-
-            # Para e remove o container antigo
-            docker stop $CONTAINER_NAME || true
-            docker rm $CONTAINER_NAME || true
-
-            # Puxa a nova imagem
-            docker pull $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-
-            # Roda o novo container injetando os secrets como variaveis de ambiente
-            # (AWS_ACCESS_KEY_ID/SECRET nao sao passados: a EC2 usa a IAM Role para acessar o S3)
-            # A porta exposta agora usa a variavel $HOST_PORT (com fallback para 80 caso o secret esteja vazio)
-            docker run -d --name $CONTAINER_NAME \
-              -p 118 :3000 \
-              -e DB_HOST=$DB_HOST \
-              -e DB_USER=$DB_USER \
-              -e DB_PASSWORD=$DB_PASSWORD \
-              -e DB_NAME=$DB_NAME \
-              -e AWS_REGION=$AWS_REGION \
-              -e AWS_S3_BUCKET_NAME=$AWS_S3_BUCKET_NAME \
-              $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+volumes:
+  # Declaração do volume nomeado usado pelo banco de dados
+  db_data:
